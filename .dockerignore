@@ -1,0 +1,17 @@
+.git
+.gitignore
+.github
+*.md
+LICENSE
+__pycache__/
+*.pyc
+.venv/
+*.log
+*.db
+*.sqlite
+*.sqlite3
+config.json
+accounts_*.txt
+mistral_keys.txt
+pending.jsonl
+data/
