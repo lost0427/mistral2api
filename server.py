@@ -1,22 +1,41 @@
 # -*- coding: utf-8 -*-
 """Mistral API 网关 — 多 key 轮询 + 429 冷却 + 流式 SSE + OpenAI 兼容。
 
-启动后暴露 OpenAI 兼容 endpoint，客户端用任意 key（或配置的统一 key）访问，
-网关自动轮询后端 Mistral API key 池，遇到 429 自动冷却切换下一个。
+仅网关模式：配置由挂载的 .env 提供，Key 池由挂载的 keys.txt 提供。
 
-用法:
-    python server.py --port 8082
-    python server.py --port 8082 --api-keys sk-my-gateway-key --load-keys accounts_latest.txt
+部署:
+    docker build -t mistral2api .
+    docker run -d -p 8082:8082 -v ./.env:/app/.env:ro -v ./keys.txt:/app/keys.txt:ro mistral2api
+本地:
+    python server.py  # 读取 .env / keys.txt（如存在）
 """
 import json
+import os
 import time
 import threading
-import argparse
 from datetime import datetime
 from typing import Optional
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 import requests
+
+
+def load_dotenv(path: str):
+    """.env 解析：KEY=VALUE，支持 # 注释和引号，不覆盖已有环境变量。"""
+    try:
+        if not os.path.exists(path):
+            return
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                k, v = k.strip(), v.strip().strip("'").strip('"')
+                if k and k not in os.environ:
+                    os.environ[k] = v
+    except Exception:
+        pass
 
 
 class KeyPool:
@@ -116,7 +135,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", len(body))
+        self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
 
@@ -237,33 +256,38 @@ class GatewayHandler(BaseHTTPRequestHandler):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Mistral API 网关 — 多 key 轮询 + OpenAI 兼容")
-    parser.add_argument("--port", type=int, default=8082, help="监听端口")
-    parser.add_argument("--host", default="0.0.0.0", help="监听地址")
-    parser.add_argument("--api-keys", help="网关访问密钥（逗号分隔，留空则不鉴权）")
-    parser.add_argument("--load-keys", help="从 accounts_*.txt 加载 key 文件")
-    parser.add_argument("--cooldown", type=int, default=60, help="429 冷却秒数")
-    parser.add_argument("--proxy", help="上游代理地址")
-    args = parser.parse_args()
+    # 仅从挂载文件读取：/app/.env + /app/keys.txt（本地则 .env / keys.txt）
+    load_dotenv("/app/.env")
+    load_dotenv(".env")
+
+    host = os.getenv("HOST", "0.0.0.0")
+    port = int(os.getenv("PORT", "8082"))
+    cooldown = int(os.getenv("COOLDOWN", "60"))
+    proxy = os.getenv("PROXY", "")
 
     global gateway_keys, pool
-    pool = KeyPool(cooldown_seconds=args.cooldown)
-    if args.api_keys:
-        gateway_keys = [k.strip() for k in args.api_keys.split(",")]
-    if args.load_keys:
-        pool.load_from_file(args.load_keys)
-        print(f"✅ 从 {args.load_keys} 加载了 {pool.count} 个 key")
+    pool = KeyPool(cooldown_seconds=cooldown)
 
-    if args.proxy:
-        import os
-        os.environ["HTTP_PROXY"] = args.proxy
-        os.environ["HTTPS_PROXY"] = args.proxy
+    raw_keys = os.getenv("GATEWAY_KEYS", "")
+    if raw_keys:
+        gateway_keys = [k.strip() for k in raw_keys.split(",") if k.strip()]
 
-    server = HTTPServer((args.host, args.port), GatewayHandler)
-    print(f"🚀 mistral2api gateway 启动: http://{args.host}:{args.port}")
-    print(f"   Key 池: {pool.count} 个 key, {pool.available} 可用")
-    print(f"   鉴权: {'开启' if gateway_keys else '关闭'}")
-    print(f"   端点: /v1/chat/completions, /v1/models, /health, /admin/keys")
+    for p in ("/app/keys.txt", "keys.txt"):
+        if os.path.exists(p):
+            try:
+                pool.load_from_file(p)
+                print(f"loaded {pool.count} keys from {p}")
+            except Exception as e:
+                print(f"load keys failed {p}: {e}")
+            break
+
+    if proxy:
+        os.environ["HTTP_PROXY"] = proxy
+        os.environ["HTTPS_PROXY"] = proxy
+
+    server = HTTPServer((host, port), GatewayHandler)
+    print(f"gateway listening on http://{host}:{port}")
+    print(f"keys: {pool.count} available: {pool.available} auth: {'on' if gateway_keys else 'off'}")
     server.serve_forever()
 
 

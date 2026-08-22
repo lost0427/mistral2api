@@ -1,6 +1,8 @@
 config.json
 accounts_*.txt
 mistral_keys.txt
+keys.txt
+.env
 pending.jsonl
 __pycache__/
 *.pyc

@@ -118,12 +118,21 @@ python register.py --resume
 
 #### 2. 启动 API 网关
 
-```bash
-# 加载 key 文件启动
-python server.py --port 8082 --load-keys accounts_latest.txt
+网关只从两个挂载文件读取配置，不接受 `docker run` 传参：
 
-# 带鉴权 + 代理
-python server.py --port 8082 --api-keys sk-my-gw-key --proxy http://127.0.0.1:7890
+* `.env` → `GATEWAY_KEYS`/`PROXY`/`PORT`/`COOLDOWN`（复制 `.env.example` 修改）
+* `keys.txt` → 每行 `email|key` 或单行 `key`
+
+```bash
+# 本地（自动读 .env / keys.txt）
+python server.py
+
+# Docker
+docker build -t mistral2api .
+docker run -d -p 8082:8082 \
+  -v ./.env:/app/.env:ro \
+  -v ./keys.txt:/app/keys.txt:ro \
+  mistral2api
 
 # 客户端使用
 curl http://localhost:8082/v1/chat/completions \
